@@ -4,11 +4,28 @@ const { pathToString } = require("@cosmjs/crypto");
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const { LedgerSigner } = require("@cosmjs/ledger-amino");
 // eslint-disable-next-line @typescript-eslint/naming-convention
-const TransportNodeHid = require("@ledgerhq/hw-transport-node-hid").default;
+import TransportNodeHid from "@ledgerhq/hw-transport-node-hid";
 // const fetch = require("node-fetch");
 const fetch = require("cross-fetch");
 const { TxRaw, Tx } = require("cosmjs-types/cosmos/tx/v1beta1/tx");
 const { fromBase64, toBase64 } = require("@cosmjs/encoding");
+import {
+  AccAddress,
+  Coin,
+  CreateTxOptions,
+  Denom,
+  Fee,
+  Key,
+  LCDClient,
+  MnemonicKey,
+  Msg,
+  MsgExecuteContract,
+  MsgSend,
+  RawKey,
+  // Tx,
+  Wallet,
+} from "@terra-money/terra.js";
+import { TerraLedgerKey } from "./terraledger";
 
 const interactiveTimeout = 120_000;
 const accountNumbers = [0, 1, 2, 10];
@@ -22,13 +39,18 @@ const defaultFee = {
 const defaultMemo = "Some memo";
 const defaultSequence = "0";
 
-async function getAccount(address) {
+async function getAccount(address: string) {
   return fetch(
     "https://cosmos-lcd.quickapi.com/cosmos/auth/v1beta1/accounts/" + address
   );
 }
 
-async function signMsgSend(signer, accountNumber, fromAddress, toAddress) {
+async function signMsgSend(
+  signer: any,
+  accountNumber: string,
+  fromAddress: string,
+  toAddress: string
+) {
   const resp = await getAccount(fromAddress);
   console.log({ data: resp });
 
@@ -66,7 +88,7 @@ async function signMsgSend(signer, accountNumber, fromAddress, toAddress) {
 }
 
 // TODO: fix me
-async function broadcastTx(txObj) {
+async function broadcastTx(txObj: any) {
   const resp = await fetch(
     "https://cosmos-lcd.quickapi.com/cosmos/auth/v1beta1/accounts/txs",
     {
@@ -89,18 +111,7 @@ async function broadcastTx(txObj) {
   return data;
 }
 
-async function run() {
-  //   const resp = await getAccount(
-  //     "cosmos1nm0rrq86ucezaf8uj35pq9fpwr5r82cl8sc7p5"
-  //   );
-  //   const json = await resp.json();
-  //   console.log({ data: json.account });
-
-  //   const account_number = json.account.account_number ?? "0";
-  //   const sequence = json.account.sequence ?? "0";
-
-  //   console.log({ account_number, sequence });
-  //   return;
+async function runLedgerV1() {
   console.log("ledger transport init");
   const ledgerTransport = await TransportNodeHid.create(
     interactiveTimeout,
@@ -114,13 +125,13 @@ async function run() {
   });
 
   const accounts = await signer.getAccounts();
-  const printableAccounts = accounts.map((account) => ({
+  const printableAccounts = accounts.map((account: any) => ({
     ...account,
     pubkey: toBase64(account.pubkey),
   }));
   console.info("Accounts from Ledger device:");
   console.table(
-    printableAccounts.map((account, i) => ({
+    printableAccounts.map((account: any, i: number) => ({
       ...account,
       hdPath: pathToString(paths[i]),
     }))
@@ -138,7 +149,7 @@ async function run() {
   );
   const { signature, signDoc } = await signMsgSend(
     signer,
-    accountNumber0,
+    String(accountNumber0),
     address0,
     address0
   );
@@ -162,6 +173,106 @@ async function run() {
   // TODO: FIXME
   const broadcastResponse = await broadcastTx(stdTx);
   console.log({ broadcastResponse });
+}
+
+async function runLedgerV2() {
+  console.log("ledger transport init");
+  const ledgerTransport = await TransportNodeHid.create(
+    interactiveTimeout,
+    interactiveTimeout
+  );
+  console.log("ledger transport initialized");
+  const signer = new LedgerSigner(ledgerTransport, {
+    testModeAllowed: true,
+    hdPaths: paths,
+    prefix: "cosmos",
+  });
+
+  const accounts = await signer.getAccounts();
+  const printableAccounts = accounts.map((account: any) => ({
+    ...account,
+    pubkey: toBase64(account.pubkey),
+  }));
+  console.info("Accounts from Ledger device:");
+  console.table(
+    printableAccounts.map((account: any, i: number) => ({
+      ...account,
+      hdPath: pathToString(paths[i]),
+    }))
+  );
+
+  //   console.info("Showing address of first account on device");
+  //   await signer.showAddress();
+  //   console.info("Showing address of 3rd account on device");
+  //   await signer.showAddress(paths[2]); // Path of 3rd account
+
+  const accountNumber0 = 0;
+  const address0 = accounts[accountNumber0].address;
+  console.info(
+    `Signing on Ledger device with account index ${accountNumber0} (${address0}). Please review and approve on the device now.`
+  );
+
+  await ledgerTransport.close();
+
+  const resp = await getAccount(address0);
+  console.log({ data: resp });
+
+  const json = await resp.json();
+  console.log({ data: json.account });
+
+  const account_number = json.account.account_number ?? "0";
+  const sequence = json.account.sequence ?? "0";
+
+  console.log({ account_number, sequence });
+
+  const unsignedTx: CreateTxOptions = {
+    memo: "test",
+    fee: new Fee(100000, [new Coin("uatom", "10000")]),
+    msgs: [],
+  };
+
+  unsignedTx.msgs = [
+    new MsgSend(address0, address0, [new Coin("uatom", "123")]),
+  ];
+
+  const lcdClient = new LCDClient({
+    URL: "https://cosmos-lcd.quickapi.com",
+    chainID: "cosmoshub-4",
+  });
+  const wallet = new Wallet(
+    lcdClient,
+    new TerraLedgerKey(
+      "cosmos",
+      pathToString(paths[0]),
+      printableAccounts[0].pubkey
+    )
+  );
+
+  const signedTx = await wallet.createAndSignTx(unsignedTx);
+
+  console.log({ signedTx });
+
+  const result = await lcdClient.tx.broadcastSync(signedTx);
+
+  console.log({ result });
+  // create and sign
+}
+
+async function run() {
+  //   const resp = await getAccount(
+  //     "cosmos1nm0rrq86ucezaf8uj35pq9fpwr5r82cl8sc7p5"
+  //   );
+  //   const json = await resp.json();
+  //   console.log({ data: json.account });
+
+  //   const account_number = json.account.account_number ?? "0";
+  //   const sequence = json.account.sequence ?? "0";
+
+  //   console.log({ account_number, sequence });
+  //   return;
+  //   await runLedgerV1();
+
+  await runLedgerV2();
 
   // It seems the Ledger device needs a bit of time to recover
   await new Promise((resolve) => setTimeout(resolve, 1000));
